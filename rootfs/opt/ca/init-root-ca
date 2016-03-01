@@ -1,0 +1,54 @@
+#!/usr/bin/with-contenv sh
+
+set -e
+
+ca_root=${PKI_CA_ROOT_DIR:-/root/ca}
+
+if [ -f "${ca_root}/index.txt" ]; then
+  printf 'ERROR: CA root directory appears to already have data present; aborting.\n'
+fi
+if [ "${PKI_SUBJECT}" == "" ]; then
+  printf 'ERROR: environment variable PKI_SUBJECT not specified.\n'
+  exit 1
+fi
+
+mkdir -p ${ca_root}
+chmod 0750 ${ca_root}
+
+LOCKFILE="${PKI_CA_ROOT_DIR}/openssl.lock"
+lockfile-create $LOCKFILE
+if [ $? -ne 0 ] ; then
+  printf '\nUnable to create lock file: %s\n' $LOCKFILE 1>&2 && \
+  exit 2
+fi
+lockfile-touch $LOCKFILE &
+LOCKTOUCHPID="$!"
+trap "kill $LOCKTOUCHPID;lockfile-remove $LOCKFILE; exit" INT TERM EXIT
+
+mkdir -p ${ca_root}/certs \
+         ${ca_root}/newcerts \
+         ${ca_root}/crl \
+         ${ca_root}/csr
+
+chmod 0750 ${ca_root}/certs \
+           ${ca_root}/newcerts \
+           ${ca_root}/crl \
+           ${ca_root}/csr
+
+if [ ! -f "${ca_root}/openssl.cnf" ]; then
+  cp /opt/ca/openssl.cnf ${ca_root}/openssl.cnf
+fi
+
+mkdir -p ${ca_root}/private
+chmod 0700 ${ca_root}/private
+
+touch ${ca_root}/index.txt
+chmod 0750 ${ca_root}/index.txt
+
+openssl genrsa -out ${ca_root}/private/key.pem 4096
+chmod 0440 ${ca_root}/private/key.pem
+
+cmd="openssl req -new -batch -subj \"${PKI_SUBJECT}\" -key ${ca_root}/private/key.pem -out ${ca_root}/csr/ca.csr"
+eval $cmd
+
+_=openssl ca -create_serial -days 7300 -batch -selfsign -extensions v3_ca -config ${ca_root}/openssl.cnf -in ${ca_root}/csr/ca.csr -out ${ca_root}/certs/ca.pem

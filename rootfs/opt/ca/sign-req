@@ -1,0 +1,82 @@
+#!/usr/bin/with-contenv sh
+
+set -e
+
+usage() {
+  cat <<EOT
+
+sign-req signs a certificate request using the container's CA.
+
+Usage: sign-req -r <request-file> -c <cert-file> -e <extension>
+
+OPTIONS:
+
+  -r  Required; specifies the certificate request to sign (input)
+
+  -c  Required; specifies the certificate file (output)
+
+  -e  Required; specifies the certificate extension to use when signing the
+      request.
+
+      Certificate extensions vary depending on your CA's configuration. If
+      using the config provided by this container the extensions are:
+
+        usr_cert
+          - typical human client certificate (clientAuth, emailProtection)
+        client_cert
+          - typical system client certificate (clientAuth)
+        server_cert
+          - typical server certificate (serverAuth)
+        cluster_cert
+          - typical clustered server certificate (clientAuth, serverAuth)
+
+EOT
+}
+
+ca_root=${PKI_CA_ROOT_DIR:-/root/ca}
+
+while getopts ":h:r:c:e:" opt; do
+  case $opt in
+    h) usage;;
+    r) INFILE=$OPTARG;;
+    c) OUTFILE=$OPTARG;;
+    e) EXT=$OPTARG;;
+    -) break;;
+    \?) printf '\nInvalid option: -%s\n' ${OPTARG} 1>&2; exit 1;;
+    :) printf '\nOption: -%s requires an argument\n' ${OPTARG} 1>&2; exit 1;;
+  esac
+done
+
+shift $(($OPTIND - 1))
+
+[[ -z ${INFILE} ]] && \
+  printf '\nMissing required option: -r <request-file>\n' 1>&2 && \
+  usage && exit 1
+
+[[ -z ${OUTFILE} ]] && \
+  printf '\nMissing required option: -c <cert-file>\n' 1>&2 && \
+  usage && exit 1
+
+[[ -z ${EXT} ]] && \
+  printf '\nMissing required option: -e <extensions>\n' 1>&2 && \
+  usage && exit 1
+
+# move the request file...
+csr_file=${ca_root}/csr/$(basename $INFILE)
+cert_file=${ca_root}/certs/$(basename $INFILE)
+
+cp $INFILE $csr_file
+
+LOCKFILE="${PKI_CA_ROOT_DIR}/openssl.lock"
+lockfile-create $LOCKFILE
+if [ $? -ne 0 ] ; then
+  printf '\nUnable to create lock file: %s\n' $LOCKFILE 1>&2 && \
+  exit 2
+fi
+lockfile-touch $LOCKFILE &
+LOCKTOUCHPID="$!"
+trap "kill $LOCKTOUCHPID;lockfile-remove $LOCKFILE; exit" INT TERM EXIT
+
+openssl ca -config ${ca_root}/openssl.cnf -extensions ${EXT} -days 375 -notext -batch -policy policy_loose -in ${csr_file} -out ${cert_file}
+
+cp ${cert_file} ${OUTFILE}
